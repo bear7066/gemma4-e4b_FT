@@ -1,0 +1,164 @@
+"""
+Gemma 4 Stage 1 Multimodal Fine-tuning
+- Model: google/gemma-4-e4b-it (Gemma4ForConditionalGeneration)
+- Training: TRL-style SFT with LoRA via GemmaSFTTrainer + DeepSpeed
+- Monitoring: Trackio (real-time metrics)
+- Supports: image + video inputs
+
+Usage:
+    uv run deepspeed stage1/train.py --deepspeed scripts/stage1.json [args...]
+"""
+
+import sys
+import pathlib
+sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
+
+from dataclasses import dataclass, field
+from typing import Optional
+
+import torch
+import transformers
+from transformers import (
+    AutoProcessor,
+    Gemma4ForConditionalGeneration,
+    HfArgumentParser,
+    TrainingArguments,
+)
+from peft import LoraConfig, get_peft_model
+
+from stage1.ds_wrapper import make_data_module
+from stage1.forward import replace_forward
+from stage1.sft import GemmaSFTTrainer
+from stage1.utils import _freeze_llm, _unfreeze_image_encoder, _print_trainable_parameters, _log
+
+
+@dataclass
+class ModelArguments:
+    model_id: str = field(
+        default="google/gemma-4-e4b-it",
+        metadata={"help": "HuggingFace model ID or local path"},
+    )
+    use_lora: bool = field(
+        default=True,
+        metadata={"help": "Use LoRA for LLM backbone (recommended for stage 1)"},
+    )
+    lora_r: int = field(default=16, metadata={"help": "LoRA rank"})
+    lora_alpha: int = field(default=32, metadata={"help": "LoRA alpha"})
+    lora_dropout: float = field(default=0.05, metadata={"help": "LoRA dropout"})
+
+
+@dataclass
+class DataArguments:
+    data_path: str = field(metadata={"help": "Training data JSON file path"})
+    image_folder: Optional[str] = field(
+        default=None,
+        metadata={"help": "Image/video root directory"},
+    )
+
+
+@dataclass
+class Stage1TrainingArguments(TrainingArguments):
+    image_encoder_lr: Optional[float] = field(
+        default=0.0,
+        metadata={"help": "Vision tower learning rate (0 = frozen)"},
+    )
+    projector_lr: Optional[float] = field(
+        default=2e-5,
+        metadata={"help": "embed_vision (projector) learning rate"},
+    )
+    max_seq_length: int = field(
+        default=4096,
+        metadata={"help": "Max sequence length"},
+    )
+    cache_dir: Optional[str] = field(default=None)
+
+
+def train():
+    parser = HfArgumentParser((ModelArguments, DataArguments, Stage1TrainingArguments))
+    model_args, data_args, training_args = parser.parse_args_into_dataclasses()
+
+    compute_dtype = torch.bfloat16
+    device = training_args.device
+
+    # Patch Gemma 4 forward for multimodal training
+    replace_forward()
+    _log(f"Loading model: {model_args.model_id}")
+
+    model = Gemma4ForConditionalGeneration.from_pretrained(
+        model_args.model_id,
+        dtype=compute_dtype,
+        cache_dir=training_args.cache_dir,
+        attn_implementation="flash_attention_2",
+    )
+
+    # Stage 1: freeze LLM, unfreeze embed_vision (projector)
+    _freeze_llm(model)
+    _unfreeze_image_encoder(model, compute_dtype, device)
+
+    # Optionally add LoRA to LLM backbone (keeps it frozen but adds trainable adapters)
+    if model_args.use_lora:
+        lora_config = LoraConfig(
+            r=model_args.lora_r,
+            lora_alpha=model_args.lora_alpha,
+            lora_dropout=model_args.lora_dropout,
+            bias="none",
+            task_type="CAUSAL_LM",
+            target_modules=["q_proj", "v_proj", "k_proj", "o_proj"],
+            layers_to_transform=list(range(42)),  # gemma4-e4b has 42 text layers
+            layers_pattern="language_model.layers",
+        )
+        model = get_peft_model(model, lora_config)
+        _log("LoRA applied to LLM backbone")
+
+    if training_args.gradient_checkpointing:
+        model.enable_input_require_grads()
+        training_args.gradient_checkpointing_kwargs = {"use_reentrant": True}
+
+    model.config.use_cache = False
+    model.config.image_encoder_lr = training_args.image_encoder_lr
+    model.config.projector_lr = training_args.projector_lr
+
+    _print_trainable_parameters(model)
+
+    # Processor handles image + video tokenization for Gemma 4
+    processor = AutoProcessor.from_pretrained(model_args.model_id)
+    data_module = make_data_module(
+        processor=processor,
+        data_path=data_args.data_path,
+        image_folder=data_args.image_folder,
+        max_seq_length=training_args.max_seq_length,
+    )
+
+    trainer = GemmaSFTTrainer(
+        model=model,
+        processing_class=processor,
+        args=training_args,
+        **data_module,
+    )
+
+    output_dir = pathlib.Path(training_args.output_dir)
+    resume = bool(list(output_dir.glob("checkpoint-*")))
+    _log(f"{'Resuming' if resume else 'New training'} → {training_args.output_dir}")
+    trainer.train(resume_from_checkpoint=resume)
+
+    trainer.save_state()
+    model.config.use_cache = True
+
+    if trainer.deepspeed:
+        torch.cuda.synchronize()
+        trainer.save_model(training_args.output_dir)
+    else:
+        from peft import PeftModel
+        if isinstance(trainer.model, PeftModel):
+            # Save only LoRA adapter weights (~32 MB) instead of full model (~8 GB)
+            trainer.model.save_pretrained(training_args.output_dir)
+        else:
+            state_dict = {k: v.cpu() for k, v in trainer.model.state_dict().items()}
+            trainer._save(training_args.output_dir, state_dict=state_dict)
+            trainer.model.config.save_pretrained(training_args.output_dir)
+
+    _log("Training complete, model saved to", training_args.output_dir)
+
+
+if __name__ == "__main__":
+    train()
