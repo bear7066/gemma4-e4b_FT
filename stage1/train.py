@@ -1,7 +1,7 @@
 """
 Gemma 4 Stage 1 Multimodal Fine-tuning
 - Model: google/gemma-4-e4b-it (Gemma4ForConditionalGeneration)
-- Training: TRL-style SFT with LoRA via GemmaSFTTrainer + DeepSpeed
+- Training: SFT with LoRA via GemmaSFTTrainer + DeepSpeed
 - Monitoring: Trackio (real-time metrics)
 - Supports: image + video inputs
 
@@ -27,7 +27,6 @@ from transformers import (
 from peft import LoraConfig, get_peft_model
 
 from stage1.ds_wrapper import make_data_module
-from stage1.forward import replace_forward
 from stage1.sft import GemmaSFTTrainer
 from stage1.utils import _freeze_llm, _unfreeze_image_encoder, _print_trainable_parameters, _log
 
@@ -76,12 +75,9 @@ class Stage1TrainingArguments(TrainingArguments):
 def train():
     parser = HfArgumentParser((ModelArguments, DataArguments, Stage1TrainingArguments))
     model_args, data_args, training_args = parser.parse_args_into_dataclasses()
-
     compute_dtype = torch.bfloat16
     device = training_args.device
 
-    # Patch Gemma 4 forward for multimodal training
-    replace_forward()
     _log(f"Loading model: {model_args.model_id}")
 
     model = Gemma4ForConditionalGeneration.from_pretrained(
