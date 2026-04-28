@@ -143,6 +143,7 @@ class SupervisedDataset(Dataset):
             return_dict=True,
             return_tensors="pt",
             add_generation_prompt=False,
+            enable_thinking=False,
             **kw,
         )
         input_ids = encoded["input_ids"].squeeze(0).long()
@@ -162,6 +163,7 @@ class SupervisedDataset(Dataset):
                     return_dict=True,
                     return_tensors="pt",
                     add_generation_prompt=True,
+                    enable_thinking=False,
                     **kw,
                 )
                 start_len = prefix["input_ids"].size(1)
@@ -186,6 +188,7 @@ class SupervisedDataset(Dataset):
                 return_dict=True,
                 return_tensors="pt",
                 add_generation_prompt=False,
+                enable_thinking=False,
                 **kw,
             )
             end_len = prefix_with_answer["input_ids"].size(1)

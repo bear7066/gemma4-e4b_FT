@@ -12,10 +12,8 @@ Usage:
 import sys
 import pathlib
 sys.path.insert(0, str(pathlib.Path(__file__).parent.parent))
-
 from dataclasses import dataclass, field
 from typing import Optional
-
 import torch
 import transformers
 from transformers import (
@@ -25,7 +23,6 @@ from transformers import (
     TrainingArguments,
 )
 from peft import LoraConfig, get_peft_model
-
 from stage1.ds_wrapper import make_data_module
 from stage1.sft import GemmaSFTTrainer
 from stage1.utils import _freeze_llm, _unfreeze_image_encoder, _print_trainable_parameters, _log
