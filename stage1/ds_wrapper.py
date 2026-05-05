@@ -26,16 +26,15 @@ from stage1.utils import _pad_sequence
 
 IGNORE_INDEX = -100
 
-
 class SupervisedDataset(Dataset):
     def __init__(
-        self,
-        data_path: str,
-        processor: transformers.ProcessorMixin,
-        image_folder: str | None = None,
-        max_seq_length: int = 4096,
-        max_decode_frames: int = 32,
-    ) -> None:
+            self,
+            data_path: str,
+            processor: transformers.ProcessorMixin,
+            image_folder: str | None = None,
+            max_seq_length: int = 4096,
+            max_decode_frames: int = 32,
+            ) -> None:
         self.processor = processor
         self.image_folder = image_folder
         self.max_seq_length = max_seq_length
@@ -109,8 +108,8 @@ class SupervisedDataset(Dataset):
                         for key in ("video", "path", "url"):
                             if key in item:
                                 array, fps = self._load_video_as_array(
-                                    item[key], num_frames=self.max_decode_frames
-                                )
+                                        item[key], num_frames=self.max_decode_frames
+                                        )
                                 item = {**item, key: array}
                                 fps_list.append(fps)
                                 break
@@ -119,8 +118,8 @@ class SupervisedDataset(Dataset):
         return messages, fps_list
 
     def _build_sample(
-        self, messages: List[dict], fps_override: Optional[float] = None
-    ) -> Dict[str, torch.Tensor]:
+            self, messages: List[dict], fps_override: Optional[float] = None
+            ) -> Dict[str, torch.Tensor]:
         processor = self.processor
         normalized, detected_fps = self._normalize_messages(messages)
 
@@ -138,14 +137,14 @@ class SupervisedDataset(Dataset):
         kw = {"video_metadata": video_metadata} if video_metadata else {}
 
         encoded = processor.apply_chat_template(
-            normalized,
-            tokenize=True,
-            return_dict=True,
-            return_tensors="pt",
-            add_generation_prompt=False,
-            enable_thinking=False,
-            **kw,
-        )
+                normalized,
+                tokenize=True,
+                return_dict=True,
+                return_tensors="pt",
+                add_generation_prompt=False,
+                enable_thinking=False,
+                **kw,
+                )
         input_ids = encoded["input_ids"].squeeze(0).long()
         attention_mask = encoded["attention_mask"].squeeze(0).long()
         labels = torch.full_like(input_ids, IGNORE_INDEX)
@@ -158,39 +157,39 @@ class SupervisedDataset(Dataset):
                 start_len = 0
             else:
                 prefix = processor.apply_chat_template(
-                    normalized[:idx],
-                    tokenize=True,
-                    return_dict=True,
-                    return_tensors="pt",
-                    add_generation_prompt=True,
-                    enable_thinking=False,
-                    **kw,
-                )
+                        normalized[:idx],
+                        tokenize=True,
+                        return_dict=True,
+                        return_tensors="pt",
+                        add_generation_prompt=True,
+                        enable_thinking=False,
+                        **kw,
+                        )
                 start_len = prefix["input_ids"].size(1)
                 # Guard: verify prefix tokens align with full input_ids.
                 # Misalignment means the tokenizer is not prefix-stable across
                 # add_generation_prompt, which would silently corrupt labels.
                 prefix_ids = prefix["input_ids"].squeeze(0)
                 if start_len > input_ids.size(0) or not torch.equal(
-                    input_ids[:start_len], prefix_ids
-                ):
+                        input_ids[:start_len], prefix_ids
+                        ):
                     from stage1.utils import _log
                     _log(
-                        f"WARNING: label span misalignment at turn {idx} "
-                        f"(prefix_len={start_len}, seq_len={input_ids.size(0)}) "
-                        "— labels skipped for this turn"
-                    )
+                            f"WARNING: label span misalignment at turn {idx} "
+                            f"(prefix_len={start_len}, seq_len={input_ids.size(0)}) "
+                            "— labels skipped for this turn"
+                            )
                     continue
 
             prefix_with_answer = processor.apply_chat_template(
-                normalized[:idx + 1],
-                tokenize=True,
-                return_dict=True,
-                return_tensors="pt",
-                add_generation_prompt=False,
-                enable_thinking=False,
-                **kw,
-            )
+                    normalized[:idx + 1],
+                    tokenize=True,
+                    return_dict=True,
+                    return_tensors="pt",
+                    add_generation_prompt=False,
+                    enable_thinking=False,
+                    **kw,
+                    )
             end_len = prefix_with_answer["input_ids"].size(1)
             labels[start_len:end_len] = input_ids[start_len:end_len]
 
@@ -208,16 +207,30 @@ class SupervisedDataset(Dataset):
             labels = labels[:L]
 
         data = dict(
-            input_ids=input_ids,
-            attention_mask=attention_mask,
-            labels=labels,
-        )
+                input_ids=input_ids,
+                attention_mask=attention_mask,
+                labels=labels,
+                )
         if "pixel_values" in encoded:
             data["pixel_values"] = encoded["pixel_values"]
+
         if "pixel_values_videos" in encoded:
             data["pixel_values_videos"] = encoded["pixel_values_videos"]
+
+            # Gemma4 forward currently routes visual features through image path.
+            # So for video-only samples, also expose video tensors as image tensors.
+            if "pixel_values" not in data:
+                data["pixel_values"] = encoded["pixel_values_videos"]
+
+        if "image_position_ids" in encoded:
+            data["image_position_ids"] = encoded["image_position_ids"]
+
         if "video_position_ids" in encoded:
             data["video_position_ids"] = encoded["video_position_ids"]
+
+            # Same reason: model expects image_position_ids.
+            if "image_position_ids" not in data:
+                data["image_position_ids"] = encoded["video_position_ids"]
         if "mm_token_type_ids" in encoded:
             mm = encoded["mm_token_type_ids"].squeeze(0).long()
             data["mm_token_type_ids"] = mm[:L]
@@ -243,6 +256,7 @@ class DataCollatorForSupervisedDataset:
         input_ids_list = [ex["input_ids"] for ex in examples]
         labels_list = [ex["labels"] for ex in examples]
         has_image = any("pixel_values" in ex for ex in examples)
+        has_image_pos = any("image_position_ids" in ex for ex in examples)
         has_video = any("pixel_values_videos" in ex for ex in examples)
         has_video_pos = any("video_position_ids" in ex for ex in examples)
 
@@ -251,52 +265,63 @@ class DataCollatorForSupervisedDataset:
         attention_mask = (input_ids != self.pad_token_id).long()
 
         batch = dict(
-            input_ids=input_ids,
-            labels=labels,
-            attention_mask=attention_mask,
-        )
+                input_ids=input_ids,
+                labels=labels,
+                attention_mask=attention_mask,
+                )
 
         if has_image:
             batch["pixel_values"] = torch.cat(
-                [ex["pixel_values"] for ex in examples if "pixel_values" in ex], dim=0
-            )
+                    [ex["pixel_values"] for ex in examples if "pixel_values" in ex], dim=0
+                    )
         if has_video:
             batch["pixel_values_videos"] = torch.cat(
-                [ex["pixel_values_videos"] for ex in examples if "pixel_values_videos" in ex], dim=0
-            )
+                    [ex["pixel_values_videos"] for ex in examples if "pixel_values_videos" in ex], dim=0
+                    )
+        if has_image_pos:
+            batch["image_position_ids"] = torch.cat(
+                    [ex["image_position_ids"] for ex in examples if "image_position_ids" in ex],
+                    dim=0
+                    )
         if has_video_pos:
             # shape per sample: (num_videos, num_frames, max_patches, 2) → cat on dim=0
             batch["video_position_ids"] = torch.cat(
-                [ex["video_position_ids"] for ex in examples if "video_position_ids" in ex], dim=0
-            )
+                    [ex["video_position_ids"] for ex in examples if "video_position_ids" in ex], dim=0
+                    )
 
         mm_token_type_ids_list = [
-            ex.get("mm_token_type_ids", torch.zeros_like(ex["input_ids"])) for ex in examples
-        ]
+                ex.get("mm_token_type_ids", torch.zeros_like(ex["input_ids"])) for ex in examples
+                ]
         batch["mm_token_type_ids"] = _pad_sequence(mm_token_type_ids_list, padding_value=0)
+
+        if "pixel_values_videos" in batch and "pixel_values" not in batch:
+            batch["pixel_values"] = batch["pixel_values_videos"]
+
+        if "video_position_ids" in batch and "image_position_ids" not in batch:
+            batch["image_position_ids"] = batch["video_position_ids"]
 
         return batch
 
 
 def make_data_module(
-    processor: transformers.ProcessorMixin,
-    data_path: str,
-    image_folder: str | None = None,
-    max_seq_length: int = 4096,
-    max_decode_frames: int = 32,
-) -> dict:
+        processor: transformers.ProcessorMixin,
+        data_path: str,
+        image_folder: str | None = None,
+        max_seq_length: int = 4096,
+        max_decode_frames: int = 32,
+        ) -> dict:
     dataset = SupervisedDataset(
-        data_path=data_path,
-        processor=processor,
-        image_folder=image_folder,
-        max_seq_length=max_seq_length,
-        max_decode_frames=max_decode_frames,
-    )
+            data_path=data_path,
+            processor=processor,
+            image_folder=image_folder,
+            max_seq_length=max_seq_length,
+            max_decode_frames=max_decode_frames,
+            )
     collator = DataCollatorForSupervisedDataset(
-        pad_token_id=processor.tokenizer.pad_token_id
-    )
+            pad_token_id=processor.tokenizer.pad_token_id
+            )
     return dict(
-        train_dataset=dataset,
-        eval_dataset=None,
-        data_collator=collator,
-    )
+            train_dataset=dataset,
+            eval_dataset=None,
+            data_collator=collator,
+            )

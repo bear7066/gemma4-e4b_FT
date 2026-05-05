@@ -81,7 +81,7 @@ def train():
         model_args.model_id,
         dtype=compute_dtype,
         cache_dir=training_args.cache_dir,
-        attn_implementation="flash_attention_2",
+        attn_implementation="sdpa",
     )
 
     # Stage 1: freeze LLM, unfreeze embed_vision (projector)
