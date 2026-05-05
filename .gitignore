@@ -6,3 +6,4 @@ pyproject.toml
 .DS_Store
 *.pyc
 *.bin
+.env
