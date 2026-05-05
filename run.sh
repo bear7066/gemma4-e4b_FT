@@ -3,6 +3,8 @@
 # Target model: google/gemma-4-e4b-it
 # Task: video action recognition (K710 / VideoChat2-IT / WebVid action)
 export PYTORCH_CUDA_ALLOC_CONF=expandable_segments:True
+export FLASH_ATTENTION_FORCE_DISABLE=1
+export TRANSFORMERS_NO_FLASH_ATTENTION=1
 
 set -e
 
@@ -12,8 +14,8 @@ MODEL_NAME="${MODEL_NAME:-google/gemma-4-e4b-it}"
 #   ~/data/videochat2_action/videochat2_action.json      (prepare_videochat2.py)
 #   ~/data/k710_action.json                              (prepare_k710_gemma4.py)
 #   ~/data/webvid_openai_rewritten/webvid_action.json    (prepare_webvid_openai.py)
-DATA_PATH="${DATA_PATH:-$HOME/data/videochat2_action/videochat2_action.json}"
-IMAGE_FOLDER="${IMAGE_FOLDER:-$HOME/data}"
+DATA_PATH="${DATA_PATH:-./dataset/kinetics_3k/kinetic_3K.json}"
+IMAGE_FOLDER="${IMAGE_FOLDER:-./dataset/kinetics_3k}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output/gemma4_e4b_action_stage1}"
 RUN_NAME="${RUN_NAME:-gemma4-e4b-action-stage1}"
 DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-deepspeed_config/stage1.json}"
