@@ -14,13 +14,13 @@ MODEL_NAME="${MODEL_NAME:-google/gemma-4-e4b-it}"
 #   ~/data/videochat2_action/videochat2_action.json      (prepare_videochat2.py)
 #   ~/data/k710_action.json                              (prepare_k710_gemma4.py)
 #   ~/data/webvid_openai_rewritten/webvid_action.json    (prepare_webvid_openai.py)
-DATA_PATH="${DATA_PATH:-./dataset/kinetics_3k/kinetic_3K.json}"
-IMAGE_FOLDER="${IMAGE_FOLDER:-./dataset/kinetics_3k}"
+DATA_PATH="${DATA_PATH:-./dataset/bear7011___gemma-4-e4b-webvid-4_k/gemma-4-e4b-webvid-4_k-train.json}"
+IMAGE_FOLDER="${IMAGE_FOLDER:-./dataset/bear7011___gemma-4-e4b-webvid-4_k}"
 OUTPUT_DIR="${OUTPUT_DIR:-./output/gemma4_e4b_action_stage1}"
 RUN_NAME="${RUN_NAME:-gemma4-e4b-action-stage1}"
 DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-deepspeed_config/stage1.json}"
 
-NUM_GPUS="${NUM_GPUS:-1}"
+NUM_GPUS="${NUM_GPUS:-4}"
 MASTER_PORT="${MASTER_PORT:-29500}"
 
 uv run deepspeed \
@@ -37,7 +37,7 @@ uv run deepspeed \
     \
     --bf16 True \
     \
-    --use_lora True \
+    --use_lora False \
     --lora_r 16 \
     --lora_alpha 32 \
     \
@@ -45,12 +45,12 @@ uv run deepspeed \
     --per_device_train_batch_size 1 \
     --per_device_eval_batch_size 1 \
     --gradient_accumulation_steps 8 \
-    --optim "paged_adamw_8bit" \
+    --optim "adamw_torch" \
     \
-    --learning_rate 1e-5 \
+    --learning_rate 5e-6 \
     --image_encoder_lr 0.0 \
-    --projector_lr 2e-5 \
-    --weight_decay 0.0 \
+    --projector_lr 5e-6 \
+    --weight_decay 0.01 \
     --warmup_ratio 0.03 \
     --lr_scheduler_type "cosine" \
     \

@@ -63,7 +63,7 @@ class Stage1TrainingArguments(TrainingArguments):
         metadata={"help": "embed_vision (projector) learning rate"},
     )
     max_seq_length: int = field(
-        default=4096,
+        default=2304,
         metadata={"help": "Max sequence length"},
     )
     cache_dir: Optional[str] = field(default=None)
@@ -83,10 +83,19 @@ def train():
         cache_dir=training_args.cache_dir,
         attn_implementation="sdpa",
     )
-
+    
+    """
     # Stage 1: freeze LLM, unfreeze embed_vision (projector)
     _freeze_llm(model)
     _unfreeze_image_encoder(model, compute_dtype, device)
+    """
+
+    # Full fine-tuning: train all parameters
+    for name, param in model.named_parameters():
+        param.requires_grad = True
+
+    _log("Full fine-tuning enabled: all parameters trainable")
+
 
     # Optionally add LoRA to LLM backbone (keeps it frozen but adds trainable adapters)
     if model_args.use_lora:
@@ -111,7 +120,7 @@ def train():
     model.config.image_encoder_lr = training_args.image_encoder_lr
     model.config.projector_lr = training_args.projector_lr
 
-    _print_trainable_parameters(model)
+	#_print_trainable_parameters(model)
 
     # Processor handles image + video tokenization for Gemma 4
     processor = AutoProcessor.from_pretrained(model_args.model_id)

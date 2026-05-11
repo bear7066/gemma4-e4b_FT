@@ -32,8 +32,8 @@ class SupervisedDataset(Dataset):
             data_path: str,
             processor: transformers.ProcessorMixin,
             image_folder: str | None = None,
-            max_seq_length: int = 2304,
-            max_decode_frames: int = 8,
+            max_seq_length: int = 4096,
+            max_decode_frames: int = 32,
             ) -> None:
         self.processor = processor
         self.image_folder = image_folder
@@ -69,41 +69,27 @@ class SupervisedDataset(Dataset):
         raise TypeError(f"Unsupported image type: {type(src)}")
 
     def _load_video_as_array(self, src, num_frames: int = 32):
-        """Decode with PyAV (bundled FFmpeg) -> (numpy [T,H,W,C] uint8, fps float, total frames int)."""
+        """Decode with PyAV (bundled FFmpeg) -> (numpy [T,H,W,C] uint8, fps float).
+        Bypasses system FFmpeg; Gemma4VideoProcessor skips its ffmpeg path
+        when is_valid_video() returns True (4-D array input)."""
         import av, numpy as np
-
         path = self._resolve_path(src) if isinstance(src, str) else src
         container = av.open(path)
         stream = container.streams.video[0]
-
         fps = float(stream.average_rate) if stream.average_rate else 25.0
-
         all_frames = []
         for frame in container.decode(video=0):
-            all_frames.append(frame.to_ndarray(format="rgb24"))
-
+            all_frames.append(frame.to_ndarray(format='rgb24'))  # [H, W, C]
         container.close()
-
         if not all_frames:
-            raise ValueError(f"Video has no frames: {path}")
-
-        original_total_num_frames = len(all_frames)
-
-        indices = torch.linspace(
-                0,
-                original_total_num_frames - 1,
-                steps=min(num_frames, original_total_num_frames),
-                ).long().tolist()
-
-        sampled = np.stack([all_frames[i] for i in indices], axis=0)
-        sampled_total_num_frames = sampled.shape[0]
-
-        return sampled, fps, sampled_total_num_frames
+            raise ValueError(f'Video has no frames: {path}')
+        n = len(all_frames)
+        indices = torch.linspace(0, n - 1, steps=min(num_frames, n)).long().tolist()
+        return np.stack([all_frames[i] for i in indices], axis=0), fps  # ([T,H,W,C], float)
 
     def _normalize_messages(self, messages: List[dict]):
-        """Returns (normalized_messages, video_meta_list).
-        video_meta_list has one entry per video content item encountered.
-        """
+        """Returns (normalized_messages, fps_list).
+        fps_list has one entry per video content item encountered."""
         messages = copy.deepcopy(messages)
         fps_list: List[float] = []
         for msg in messages:
@@ -119,29 +105,14 @@ class SupervisedDataset(Dataset):
                                 item = {**item, key: self._load_image(item[key])}
                                 break
                     elif item.get("type") == "video":
-                        converted = False
                         for key in ("video", "path", "url"):
                             if key in item:
-                                frames, fps, total_num_frames = self._load_video_as_array(
-                                    item[key], num_frames=self.max_decode_frames
-                                )
-
-                                # 把 video 拆成多張 image，讓 template 產生 image tokens
-                                for frame in frames:
-                                    new_content.append({
-                                        "type": "image",
-                                        "image": Image.fromarray(frame).convert("RGB"),
-                                    })
-                                
-                                fps_list.append({
-                                    "fps": fps,
-                                    "total_num_frames": total_num_frames,
-                                })
-                                converted = True
+                                array, fps = self._load_video_as_array(
+                                        item[key], num_frames=self.max_decode_frames
+                                        )
+                                item = {**item, key: array}
+                                fps_list.append(fps)
                                 break
-                        if converted:
-                            continue
-
                 new_content.append(item)
             msg["content"] = new_content
         return messages, fps_list
@@ -156,21 +127,14 @@ class SupervisedDataset(Dataset):
         # fps_override (stored in JSON during preprocessing) takes priority over
         # the value detected live from the video stream.
         if detected_fps:
-            video_metadata = []
-            for meta in detected_fps:
-                fps = fps_override if fps_override is not None else meta["fps"]
-                video_metadata.append({
-                    "fps": fps,
-                    "total_num_frames": meta["total_num_frames"],
-                })
+            if fps_override is not None:
+                video_metadata = [{"fps": fps_override}] * len(detected_fps)
+            else:
+                video_metadata = [{"fps": f} for f in detected_fps]
         else:
             video_metadata = None
 
-        processor_kwargs = (
-            {"videos_kwargs": {"video_metadata": video_metadata}}
-            if video_metadata
-            else None
-        )
+        kw = {"video_metadata": video_metadata} if video_metadata else {}
 
         encoded = processor.apply_chat_template(
                 normalized,
@@ -179,8 +143,8 @@ class SupervisedDataset(Dataset):
                 return_tensors="pt",
                 add_generation_prompt=False,
                 enable_thinking=False,
-                processor_kwargs=processor_kwargs,
-        )
+                **kw,
+                )
         input_ids = encoded["input_ids"].squeeze(0).long()
         attention_mask = encoded["attention_mask"].squeeze(0).long()
         labels = torch.full_like(input_ids, IGNORE_INDEX)
@@ -199,7 +163,7 @@ class SupervisedDataset(Dataset):
                         return_tensors="pt",
                         add_generation_prompt=True,
                         enable_thinking=False,
-                        processor_kwargs=processor_kwargs,
+                        **kw,
                         )
                 start_len = prefix["input_ids"].size(1)
                 # Guard: verify prefix tokens align with full input_ids.
@@ -224,7 +188,7 @@ class SupervisedDataset(Dataset):
                     return_tensors="pt",
                     add_generation_prompt=False,
                     enable_thinking=False,
-                    processor_kwargs=processor_kwargs,
+                    **kw,
                     )
             end_len = prefix_with_answer["input_ids"].size(1)
             labels[start_len:end_len] = input_ids[start_len:end_len]
@@ -251,43 +215,25 @@ class SupervisedDataset(Dataset):
             data["pixel_values"] = encoded["pixel_values"]
 
         if "pixel_values_videos" in encoded:
-            pv = encoded["pixel_values_videos"]
+            data["pixel_values_videos"] = encoded["pixel_values_videos"]
 
-            # Gemma4 processor output is usually:
-            # [batch, frames, num_patches, hidden_dim]
-            # Example from your debug: [1, 32, 630, 768]
-            if pv.dim() > 3:
-                num_patches, hidden_dim = pv.shape[-2:]
-                pv = pv.reshape(-1, num_patches, hidden_dim)
-
-            data["pixel_values"] = pv
+            # Gemma4 forward currently routes visual features through image path.
+            # So for video-only samples, also expose video tensors as image tensors.
+            if "pixel_values" not in data:
+                data["pixel_values"] = encoded["pixel_values_videos"]
 
         if "image_position_ids" in encoded:
             data["image_position_ids"] = encoded["image_position_ids"]
 
         if "video_position_ids" in encoded:
-            vpos = encoded["video_position_ids"]
-            
-            # [batch, frames, num_patches, 2] -> [batch * frames, num_patches, 2]
-            if vpos.dim() > 3:
-                num_patches, two = vpos.shape[-2:]
-                vpos = vpos.reshape(-1, num_patches, two)
+            data["video_position_ids"] = encoded["video_position_ids"]
 
-            data["image_position_ids"] = vpos
-
+            # Same reason: model expects image_position_ids.
+            if "image_position_ids" not in data:
+                data["image_position_ids"] = encoded["video_position_ids"]
         if "mm_token_type_ids" in encoded:
             mm = encoded["mm_token_type_ids"].squeeze(0).long()
             data["mm_token_type_ids"] = mm[:L]
-
-        if not hasattr(self, "_printed_debug_shapes"):
-            self._printed_debug_shapes = True
-            print("[DEBUG] encoded keys:", list(encoded.keys()))
-            for k, v in encoded.items():
-                if hasattr(v, "shape"):
-                    print(f"[DEBUG] encoded {k}: {tuple(v.shape)}")
-            for k, v in data.items():
-                if hasattr(v, "shape"):
-                    print(f"[DEBUG] data {k}: {tuple(v.shape)}")
 
         return data
 
@@ -328,38 +274,31 @@ class DataCollatorForSupervisedDataset:
             batch["pixel_values"] = torch.cat(
                     [ex["pixel_values"] for ex in examples if "pixel_values" in ex], dim=0
                     )
-
-        """if has_video:
+        if has_video:
             batch["pixel_values_videos"] = torch.cat(
                     [ex["pixel_values_videos"] for ex in examples if "pixel_values_videos" in ex], dim=0
                     )
-        """
-
         if has_image_pos:
             batch["image_position_ids"] = torch.cat(
                     [ex["image_position_ids"] for ex in examples if "image_position_ids" in ex],
                     dim=0
                     )
-
-        """if has_video_pos:
+        if has_video_pos:
             # shape per sample: (num_videos, num_frames, max_patches, 2) → cat on dim=0
             batch["video_position_ids"] = torch.cat(
                     [ex["video_position_ids"] for ex in examples if "video_position_ids" in ex], dim=0
                     )
-        """
 
         mm_token_type_ids_list = [
                 ex.get("mm_token_type_ids", torch.zeros_like(ex["input_ids"])) for ex in examples
                 ]
         batch["mm_token_type_ids"] = _pad_sequence(mm_token_type_ids_list, padding_value=0)
 
-        """if "pixel_values_videos" in batch and "pixel_values" not in batch:
+        if "pixel_values_videos" in batch and "pixel_values" not in batch:
             batch["pixel_values"] = batch["pixel_values_videos"]
-        """
 
-        """if "video_position_ids" in batch and "image_position_ids" not in batch:
+        if "video_position_ids" in batch and "image_position_ids" not in batch:
             batch["image_position_ids"] = batch["video_position_ids"]
-        """
 
         return batch
 
@@ -368,8 +307,8 @@ def make_data_module(
         processor: transformers.ProcessorMixin,
         data_path: str,
         image_folder: str | None = None,
-        max_seq_length: int = 2304,
-        max_decode_frames: int = 8,
+        max_seq_length: int = 4096,
+        max_decode_frames: int = 32,
         ) -> dict:
     dataset = SupervisedDataset(
             data_path=data_path,

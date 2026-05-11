@@ -6,8 +6,7 @@ pyproject.toml
 .DS_Store
 *.pyc
 *.bin
-<<<<<<< HEAD
+
 .env
-=======
+
 dataset
->>>>>>> a3ef4a5 (Ignore dataset)
