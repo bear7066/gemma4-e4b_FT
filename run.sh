@@ -8,7 +8,7 @@ export TRANSFORMERS_NO_FLASH_ATTENTION=1
 
 set -e
 
-MODEL_NAME="${MODEL_NAME:-google/gemma-4-e4b-it}"
+MODEL_NAME="${MODEL_NAME:-google/gemma-4-e2b-it}"
 
 # Recommended action-recognition datasets produced by the prepare_*.py scripts:
 #   ~/data/videochat2_action/videochat2_action.json      (prepare_videochat2.py)
@@ -16,8 +16,8 @@ MODEL_NAME="${MODEL_NAME:-google/gemma-4-e4b-it}"
 #   ~/data/webvid_openai_rewritten/webvid_action.json    (prepare_webvid_openai.py)
 DATA_PATH="${DATA_PATH:-./dataset/bear7011___gemma-4-e4b-webvid-4_k/gemma-4-e4b-webvid-4_k-train.json}"
 IMAGE_FOLDER="${IMAGE_FOLDER:-./dataset/bear7011___gemma-4-e4b-webvid-4_k}"
-OUTPUT_DIR="${OUTPUT_DIR:-./output/gemma4_e4b_action_stage1}"
-RUN_NAME="${RUN_NAME:-gemma4-e4b-action-stage1}"
+OUTPUT_DIR="${OUTPUT_DIR:-./output/gemma4_e2b_action_stage1}"
+RUN_NAME="${RUN_NAME:-gemma4-e2b-action-stage1}"
 DEEPSPEED_CONFIG="${DEEPSPEED_CONFIG:-deepspeed_config/stage1.json}"
 
 NUM_GPUS="${NUM_GPUS:-4}"

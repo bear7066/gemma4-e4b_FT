@@ -31,7 +31,7 @@ from stage1.utils import _freeze_llm, _unfreeze_image_encoder, _print_trainable_
 @dataclass
 class ModelArguments:
     model_id: str = field(
-        default="google/gemma-4-e4b-it",
+        default="google/gemma-4-e2b-it",
         metadata={"help": "HuggingFace model ID or local path"},
     )
     use_lora: bool = field(
