@@ -46,12 +46,28 @@ class SupervisedDataset(Dataset):
             self.samples: List[dict] = json.load(f)
 
     def _resolve_path(self, path: str) -> str:
-        if os.path.exists(path) or path.startswith(("http://", "https://")):
+        if path.startswith(("http://", "https://")):
             return path
+
+        # 原路徑存在
+        if os.path.exists(path):
+            return path
+
+        # 原路徑不存在，但加 .mp4 後存在
+        if os.path.exists(path + ".mp4"):
+            return path + ".mp4"
+
         if self.image_folder:
             candidate = os.path.join(self.image_folder, path)
+
+            # image_folder + 原路徑存在
             if os.path.exists(candidate):
                 return candidate
+
+            # image_folder + 原路徑 + .mp4 存在
+            if os.path.exists(candidate + ".mp4"):
+                return candidate + ".mp4"
+
         return path
 
     def _load_image(self, src) -> Image.Image:
@@ -73,6 +89,12 @@ class SupervisedDataset(Dataset):
         import av, numpy as np
 
         path = self._resolve_path(src) if isinstance(src, str) else src
+
+        # 如果 JSON 裡的影片路徑沒有 .mp4，但實際檔案有 .mp4，就自動補上
+        if isinstance(path, str) and not os.path.exists(path):
+            if os.path.exists(path + ".mp4"):
+                path = path + ".mp4"
+
         container = av.open(path)
         stream = container.streams.video[0]
 
@@ -111,7 +133,16 @@ class SupervisedDataset(Dataset):
             if not isinstance(content, list):
                 content = [content]
             new_content = []
+
             for item in content:
+                # 如果 content 裡面是純文字字串，轉成 Gemma processor 要的格式
+                if isinstance(item, str):
+                    new_content.append({
+                        "type": "text",
+                        "text": item,
+                    })
+                    continue
+
                 if isinstance(item, dict):
                     if item.get("type") == "image":
                         for key in ("image", "path", "url"):
