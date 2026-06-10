@@ -62,18 +62,46 @@ class DataArguments:
 @dataclass
 class Stage1TrainingArguments(TrainingArguments):
     image_encoder_lr: Optional[float] = field(
-        default=0.0,
+        default=1e-6,
         metadata={"help": "Vision tower learning rate (0 = frozen)"},
     )
+
     projector_lr: Optional[float] = field(
-        default=2e-5,
+        default=1e-6,
         metadata={"help": "embed_vision (projector) learning rate"},
     )
+
     max_seq_length: int = field(
-        default=2304,
+        default=3072,
         metadata={"help": "Max sequence length"},
     )
+
     cache_dir: Optional[str] = field(default=None)
+
+    eval_sanity_check_only: bool = field(
+        default=False,
+        metadata={"help": "Run eval sanity check only and exit before training"},
+    )
+
+    eval_chunk_debug: bool = field(
+        default=False,
+        metadata={"help": "Run chunked eval debug and exit before training"},
+    )
+
+    eval_chunk_size: int = field(
+        default=32,
+        metadata={"help": "Chunk size for eval debug"},
+    )
+
+    eval_chunk_start: int = field(
+        default=0,
+        metadata={"help": "Start index for eval chunk debug"},
+    )
+
+    eval_chunk_end: int = field(
+        default=-1,
+        metadata={"help": "End index for eval chunk debug, -1 means len(eval_dataset)"},
+    )
 
 
 def train():
@@ -188,6 +216,165 @@ def train():
     output_dir = pathlib.Path(training_args.output_dir)
     resume = bool(list(output_dir.glob("checkpoint-*")))
     _log(f"{'Resuming' if resume else 'New training'} → {training_args.output_dir}")
+
+    if training_args.eval_sanity_check_only:
+        _log("Running eval sanity check only...")
+
+        if eval_dataset is None:
+            raise ValueError("eval_dataset is None")
+
+        _log(f"eval_dataset size: {len(eval_dataset)}")
+
+        bad_no_label = []
+        bad_exception = []
+        bad_nonfinite_tensor = []
+        valid_token_counts = []
+
+        # ============================================================
+        # 1. 全掃 eval dataset：確認 labels / pixel_values 沒問題
+        # ============================================================
+        check_n = min(10, len(eval_dataset))
+
+        for i in range(check_n):
+            try:
+                sample = eval_dataset[i]
+                batch = data_collator([sample]) if data_collator is not None else sample
+
+                if "labels" not in batch:
+                    bad_no_label.append(i)
+                    continue
+
+                labels = batch["labels"]
+                valid_tokens = (labels != -100).sum().item()
+                valid_token_counts.append(valid_tokens)
+
+                if valid_tokens == 0:
+                    bad_no_label.append(i)
+
+                # 檢查 pixel_values / floating tensor 是否有 nan 或 inf
+                for key, value in batch.items():
+                    if torch.is_tensor(value) and torch.is_floating_point(value):
+                        if not torch.isfinite(value).all():
+                            bad_nonfinite_tensor.append((i, key))
+
+            except Exception as e:
+                bad_exception.append((i, repr(e)))
+
+            if i % 500 == 0:
+                _log(f"checked eval samples: {i}/{len(eval_dataset)}")
+
+        _log(f"num eval samples total: {len(eval_dataset)}")
+        _log(f"num eval samples checked: {check_n}")
+        _log(f"num bad_no_label: {len(bad_no_label)}")
+        _log(f"bad_no_label first 50: {bad_no_label[:50]}")
+        _log(f"num bad_exception: {len(bad_exception)}")
+        _log(f"bad_exception first 10: {bad_exception[:10]}")
+        _log(f"num bad_nonfinite_tensor: {len(bad_nonfinite_tensor)}")
+        _log(f"bad_nonfinite_tensor first 10: {bad_nonfinite_tensor[:10]}")
+
+        if valid_token_counts:
+            _log(f"min valid label tokens: {min(valid_token_counts)}")
+            _log(f"max valid label tokens: {max(valid_token_counts)}")
+            _log(f"avg valid label tokens: {sum(valid_token_counts) / len(valid_token_counts)}")
+
+        if bad_no_label:
+            raise ValueError(
+                f"Found eval samples with 0 valid label tokens. "
+                f"First bad indices: {bad_no_label[:20]}"
+            )
+
+        if bad_exception:
+            raise ValueError(
+                f"Found eval samples that crash during collation. "
+                f"First bad exceptions: {bad_exception[:5]}"
+            )
+
+        if bad_nonfinite_tensor:
+            raise ValueError(
+                f"Found eval samples with NaN/Inf tensor. "
+                f"First bad tensors: {bad_nonfinite_tensor[:10]}"
+            )
+
+        _log("Eval label/collator sanity check passed.")
+
+        # ============================================================
+        # 2. 不要直接 model(**batch)
+        #    DeepSpeed 下請用 trainer.evaluate()
+        # ============================================================
+        from torch.utils.data import Subset
+
+        small_eval_dataset = Subset(
+            eval_dataset,
+            list(range(min(10, len(eval_dataset))))
+        )
+
+        trainer.eval_dataset = small_eval_dataset
+        metrics = trainer.evaluate()
+
+        _log(f"small trainer.evaluate() metrics: {metrics}")
+
+        eval_loss = metrics.get("eval_loss", None)
+
+        if eval_loss is None:
+            raise ValueError("trainer.evaluate() did not return eval_loss.")
+
+        if not torch.isfinite(torch.tensor(eval_loss)):
+            raise ValueError(
+                f"small trainer.evaluate() returned non-finite eval_loss: {eval_loss}"
+            )
+
+        _log("Small eval sanity check passed.")
+        return
+    
+    if training_args.eval_chunk_debug:
+        _log("Running eval chunk debug only...")
+
+        if eval_dataset is None:
+            raise ValueError("eval_dataset is None")
+
+        from torch.utils.data import Subset
+
+        chunk_size = training_args.eval_chunk_size
+        debug_start = training_args.eval_chunk_start
+        debug_end = (
+            len(eval_dataset)
+            if training_args.eval_chunk_end < 0
+            else min(training_args.eval_chunk_end, len(eval_dataset))
+        )
+
+        bad_chunks = []
+
+        for start in range(debug_start, debug_end, chunk_size):
+            end = min(start + chunk_size, len(eval_dataset))
+
+            _log(f"Evaluating eval chunk {start}-{end}...")
+
+            subset = Subset(eval_dataset, list(range(start, end)))
+            trainer.eval_dataset = subset
+
+            metrics = trainer.evaluate()
+            loss = metrics.get("eval_loss", None)
+
+            _log(f"eval chunk {start}-{end}: loss={loss}")
+
+            if loss is None or not torch.isfinite(torch.tensor(loss)):
+                bad_chunks.append((start, end, loss))
+                _log(f"[BAD] eval chunk {start}-{end}: loss={loss}")
+                break
+
+        _log(f"bad_chunks: {bad_chunks}")
+
+        if bad_chunks:
+            raise ValueError(f"Found bad eval chunks: {bad_chunks}")
+
+        _log("All eval chunks passed.")
+
+        if torch.distributed.is_available() and torch.distributed.is_initialized():
+            torch.distributed.barrier()
+            torch.distributed.destroy_process_group()
+
+        return
+
     trainer.train(resume_from_checkpoint=resume)
 
     trainer.save_state()

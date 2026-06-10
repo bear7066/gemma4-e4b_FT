@@ -36,6 +36,7 @@ uv run deepspeed \
     --image_folder "$IMAGE_FOLDER" \
     --output_dir "$OUTPUT_DIR" \
     --run_name "$RUN_NAME" \
+    --max_seq_length 3072 \
     \
     --bf16 True \
     \
@@ -53,17 +54,23 @@ uv run deepspeed \
     --image_encoder_lr 0.0 \
     --projector_lr 5e-6 \
     --weight_decay 0.01 \
-    --warmup_ratio 0.03 \
+    --max_grad_norm 1.0 \
+    --warmup_ratio 0.05 \
     --lr_scheduler_type "cosine" \
     \
     --eval_strategy "steps" \
-    --eval_steps 500 \
+    --eval_steps 50 \
     --save_strategy "steps" \
-    --save_steps 500 \
-    --save_total_limit 2 \
+    --save_steps 100 \
+    --save_total_limit 1 \
     \
     --gradient_checkpointing True \
     --logging_steps 10 \
     --dataloader_num_workers 4 \
-    --report_to "none"
+    --report_to "none" \
+    --eval_sanity_check_only False \
+    --eval_chunk_debug False \
+    --eval_chunk_size 1000 \
+    --eval_chunk_start 0 \
+    --eval_chunk_end -1
     # To enable Trackio monitoring: --report_to "trackio"
