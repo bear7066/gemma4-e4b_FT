@@ -12,7 +12,7 @@ COMMON_TRAINING_DEFAULTS = {
     "logging_steps": 10,
     "dataloader_num_workers": 4,
     "max_seq_length": 2304,
-    "use_lora": "False",
+    "training_mode": "full",
     "lora_r": 16,
     "lora_alpha": 32,
     "lora_dropout": 0.05,
@@ -35,7 +35,6 @@ SHELL_ENV_NAMES = {
     "num_gpus": "NUM_GPUS",
     "master_port": "MASTER_PORT",
     "bf16": "BF16",
-    "use_lora": "USE_LORA",
     "lora_r": "LORA_R",
     "lora_alpha": "LORA_ALPHA",
     "lora_dropout": "LORA_DROPOUT",
@@ -60,6 +59,7 @@ SHELL_ENV_NAMES = {
     "dataloader_num_workers": "DATALOADER_NUM_WORKERS",
     "report_to": "REPORT_TO",
     "max_seq_length": "MAX_SEQ_LENGTH",
+    "training_mode": "TRAINING_MODE",
 }
 
 

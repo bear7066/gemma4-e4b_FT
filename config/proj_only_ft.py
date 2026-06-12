@@ -7,6 +7,7 @@ TRAINING_PROFILE = {
     "image_folder": "$HOME/data",
     "output_dir": "./output/gemma4_e4b_caption",
     "run_name": "gemma4-e4b-caption",
+    "training_mode": "projector_only",
     "num_gpus": 1,
     "optim": "paged_adamw_8bit",
     "learning_rate": 5e-5,
